@@ -363,23 +363,29 @@ CREATE INDEX idx_job_queue_worker ON job_queue(worker_id) WHERE status = 'proces
 -- TABLA: logs
 -- Log estructurado del sistema
 -- ============================================================
+-- ============================================================
+-- TABLA: logs (CORREGIDA)
+-- ============================================================
 CREATE TABLE logs (
-  id            BIGSERIAL PRIMARY KEY,
-  level         TEXT NOT NULL DEFAULT 'info',  -- debug, info, warning, error, critical
-  service       TEXT NOT NULL,                  -- 'n8n', 'tts_worker', 'render_worker', etc.
-  event         TEXT NOT NULL,                  -- 'video_started', 'render_failed', etc.
-  message       TEXT,
+  id           BIGSERIAL, -- Quitamos el PRIMARY KEY de aquí
+  level        TEXT NOT NULL DEFAULT 'info',
+  service      TEXT NOT NULL,
+  event        TEXT NOT NULL,
+  message      TEXT,
   
   -- Referencias opcionales
-  topic_id      UUID,
-  script_id     UUID,
-  video_id      UUID,
-  job_id        UUID,
+  topic_id     UUID,
+  script_id    UUID,
+  video_id     UUID,
+  job_id       UUID,
   
   -- Datos adicionales
-  metadata      JSONB,
+  metadata     JSONB,
   
-  created_at    TIMESTAMPTZ DEFAULT NOW()
+  created_at   TIMESTAMPTZ DEFAULT NOW(),
+  
+  -- Definimos la llave primaria compuesta
+  PRIMARY KEY (id, created_at) 
 ) PARTITION BY RANGE (created_at);
 
 -- Particiones por mes (crear manualmente o con pg_partman)

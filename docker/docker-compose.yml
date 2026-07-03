@@ -35,7 +35,7 @@ services:
       # Base de datos separada para n8n
       POSTGRES_MULTIPLE_DATABASES: "factory,n8n"
     volumes:
-      - postgres_data_v2:/var/lib/postgresql/data
+      - postgres_data_v4:/var/lib/postgresql/data
       - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
       - ../sql/schema.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
     healthcheck:
@@ -362,7 +362,7 @@ volumes:
     driver: local
   render_fonts:
     driver: local
-  postgres_data_v2:
+  postgres_data_v4:
     driver: local
 
 # ============================================================
