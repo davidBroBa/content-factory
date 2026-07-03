@@ -30,6 +30,7 @@ services:
       <<: *common-env
       POSTGRES_USER: ${POSTGRES_USER:-factory}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factory_secure_pass_2025}
+      POSTGRES_HOST_AUTH_METHOD: trust
       POSTGRES_DB: ${POSTGRES_DB:-factory}
       # Base de datos separada para n8n
       POSTGRES_MULTIPLE_DATABASES: "factory,n8n"
