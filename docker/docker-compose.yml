@@ -1,12 +1,12 @@
 services:
 
   postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-factory}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factory_secure_pass}
-      POSTGRES_DB: ${POSTGRES_DB:-factory}
+  image: postgres:16-alpine
+  restart: unless-stopped
+  environment:
+    POSTGRES_USER: factory
+    POSTGRES_PASSWORD: factory_secure_pass
+    POSTGRES_DB: n8n
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
