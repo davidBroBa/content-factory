@@ -1,12 +1,12 @@
 services:
 
   postgres:
-  image: postgres:16-alpine
-  restart: unless-stopped
-  environment:
-    POSTGRES_USER: factory
-    POSTGRES_PASSWORD: factory_secure_pass
-    POSTGRES_DB: n8n
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory_secure_pass
+      POSTGRES_DB: n8n
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
@@ -43,13 +43,12 @@ services:
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
     restart: unless-stopped
-
     environment:
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
       DB_POSTGRESDB_DATABASE: n8n
-      DB_POSTGRESDB_USER: ${POSTGRES_USER:-factory}
-      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-factory_secure_pass}
+      DB_POSTGRESDB_USER: factory
+      DB_POSTGRESDB_PASSWORD: factory_secure_pass
       N8N_BASIC_AUTH_ACTIVE: "true"
       N8N_BASIC_AUTH_USER: admin
       N8N_BASIC_AUTH_PASSWORD: admin123
