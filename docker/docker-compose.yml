@@ -1,116 +1,44 @@
-version: "3.9"
-
-# ============================================================
-# CONTENT FACTORY — Docker Compose Completo
-# ============================================================
-# Servicios:
-#   postgres     - Base de datos principal
-#   redis        - Cola de tareas y caché
-#   n8n          - Orquestador de workflows
-#   minio        - Almacenamiento local (S3-compatible)
-#   whisper      - STT local para subtítulos
-#   tts_worker   - Worker TTS con Kokoro
-#   render_worker - Worker de render FFmpeg
-#   watchtower   - Auto-actualizaciones de imágenes
-# ============================================================
-
-x-common-env: &common-env
-  TZ: America/Mexico_City
+# CONTENT FACTORY — Easypanel Compatible
 
 services:
 
-  # ============================================================
-  # POSTGRES — Base de datos principal
-  # ============================================================
   postgres:
     image: postgres:16-alpine
-    container_name: cf_postgres
     restart: unless-stopped
     environment:
-      <<: *common-env
       POSTGRES_USER: ${POSTGRES_USER:-factory}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factory_secure_pass_2025}
       POSTGRES_DB: ${POSTGRES_DB:-factory}
-      # Base de datos separada para n8n
-      POSTGRES_MULTIPLE_DATABASES: "factory,n8n"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
       - ./sql/schema.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-factory} -d factory"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    networks:
-      - factory_net
-    # NO exponer puerto al host en producción
-    # ports:
-    #   - "5432:5432"
 
-  # ============================================================
-  # REDIS — Cola de tareas + caché
-  # Sustituye el busy-wait de n8n con una cola real
-  # ============================================================
   redis:
     image: redis:7-alpine
-    container_name: cf_redis
     restart: unless-stopped
     command: >
-      redis-server
-      --requirepass ${REDIS_PASSWORD:-redis_secure_2025}
-      --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
-      --save 60 1
-      --loglevel warning
+      redis-server --requirepass ${REDIS_PASSWORD:-redis_secure_2025}
     volumes:
       - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secure_2025}", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - factory_net
-    # NO exponer al host
-    # ports:
-    #   - "6379:6379"
 
-  # ============================================================
-  # MINIO — Almacenamiento S3-compatible local
-  # Sustituye tmpfiles.org para almacenar audio y video
-  # ============================================================
   minio:
     image: minio/minio:latest
-    container_name: cf_minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      <<: *common-env
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-factory_minio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_secure_2025}
     volumes:
       - minio_data:/data
     ports:
-      - "9000:9000"   # API S3
-      - "9001:9001"   # Console web
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    networks:
-      - factory_net
+      - "9000:9000"
+      - "9001:9001"
 
-  # MinIO Client — crea buckets al inicio
   minio_init:
     image: minio/mc:latest
-    container_name: cf_minio_init
     depends_on:
-      minio:
-        condition: service_healthy
+      - minio
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-factory_minio} ${MINIO_ROOT_PASSWORD:-minio_secure_2025};
@@ -118,256 +46,53 @@ services:
       mc mb --ignore-existing local/factory-video;
       mc mb --ignore-existing local/factory-assets;
       mc mb --ignore-existing local/factory-thumbnails;
-      mc anonymous set download local/factory-video;
-      mc anonymous set download local/factory-audio;
-      echo 'Buckets created successfully';
       exit 0;
       "
-    networks:
-      - factory_net
 
-  # ============================================================
-  # N8N — Orquestador de workflows
-  # ============================================================
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
-    container_name: cf_n8n
     restart: unless-stopped
     ports:
       - "5678:5678"
     environment:
-      <<: *common-env
-      # Base de datos
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
-      DB_POSTGRESDB_PORT: 5432
       DB_POSTGRESDB_DATABASE: n8n
       DB_POSTGRESDB_USER: ${POSTGRES_USER:-factory}
       DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-factory_secure_pass_2025}
-      DB_POSTGRESDB_SCHEMA: public
-      
-      # Host y red
-      N8N_HOST: ${N8N_HOST:-localhost}
-      N8N_PORT: 5678
-      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
-      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
-      GENERIC_TIMEZONE: America/Mexico_City
-      
-      # Seguridad
-      N8N_BASIC_AUTH_ACTIVE: "true"
-      N8N_BASIC_AUTH_USER: ${N8N_USER:-admin}
-      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD:-n8n_secure_2025}
-      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-change_this_32_char_key_now_12345}
-      
-      # Performance
-      EXECUTIONS_DATA_PRUNE: "true"
-      EXECUTIONS_DATA_MAX_AGE: 168  # 7 días en horas
-      N8N_METRICS: "true"
-      
-      # Executions
-      EXECUTIONS_PROCESS: main
-      N8N_DEFAULT_BINARY_DATA_MODE: filesystem
-      N8N_BINARY_DATA_STORAGE_PATH: /home/node/.n8n/binaryData
-      
-      # Variables de entorno para los workflows
-      # APIs externas
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY}
-      PEXELS_API_KEY: ${PEXELS_API_KEY}
-      
-      # Servicios internos
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-factory_minio}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio_secure_2025}
-      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure_2025}@redis:6379
-      
-      # Base de datos de la fábrica
-      FACTORY_DB_HOST: postgres
-      FACTORY_DB_PORT: 5432
-      FACTORY_DB_NAME: factory
-      FACTORY_DB_USER: ${POSTGRES_USER:-factory}
-      FACTORY_DB_PASSWORD: ${POSTGRES_PASSWORD:-factory_secure_pass_2025}
-      
-      # Worker API
-      WORKER_API_URL: http://render_worker:8080
-      TTS_WORKER_URL: http://tts_worker:8081
-      WHISPER_URL: http://whisper:8000
-    volumes:
-      - n8n_data:/home/node/.n8n
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    networks:
-      - factory_net
 
-  # ============================================================
-  # WHISPER — STT local para subtítulos
-  # Ya lo tienes instalado — redirigir el workflow para usar
-  # este servicio en lugar de la API de OpenAI
-  # ============================================================
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: admin
+      N8N_BASIC_AUTH_PASSWORD: n8n_secure_2025
+
+      WEBHOOK_URL: http://localhost:5678/
+
   whisper:
     image: fedirz/faster-whisper-server:latest-cpu
-    container_name: cf_whisper
     restart: unless-stopped
     environment:
-      <<: *common-env
       WHISPER__MODEL: Systran/faster-whisper-small
       WHISPER__INFERENCE_DEVICE: cpu
-      WHISPER__COMPUTE_TYPE: int8
-      WHISPER__LANGUAGE: es
-    volumes:
-      - whisper_cache:/root/.cache/huggingface
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    networks:
-      - factory_net
-    # Solo exponer si necesitas debug externo
-    # ports:
-    #   - "8000:8000"
 
-  # ============================================================
-  # TTS WORKER — Worker Python con Kokoro TTS
-  # Sustituye ElevenLabs — costo $0
-  # ============================================================
   tts_worker:
     build:
       context: ./workers/tts
-      dockerfile: Dockerfile
-    container_name: cf_tts_worker
     restart: unless-stopped
     environment:
-      <<: *common-env
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure_2025}@redis:6379
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-factory_minio}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio_secure_2025}
-      MINIO_BUCKET_AUDIO: factory-audio
-      POSTGRES_DSN: postgresql://${POSTGRES_USER:-factory}:${POSTGRES_PASSWORD:-factory_secure_pass_2025}@postgres:5432/factory
-      WORKER_PORT: 8081
-    volumes:
-      - tts_models:/app/models
-      - /tmp/tts_workspace:/tmp/workspace
     ports:
       - "8081:8081"
-    depends_on:
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks:
-      - factory_net
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-        reservations:
-          memory: 1G
 
-  # ============================================================
-  # RENDER WORKER — Worker Python con FFmpeg
-  # Sustituye JSON2Video — costo $0
-  # ============================================================
   render_worker:
     build:
       context: ./workers/render
-      dockerfile: Dockerfile
-    container_name: cf_render_worker
     restart: unless-stopped
     environment:
-      <<: *common-env
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure_2025}@redis:6379
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-factory_minio}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio_secure_2025}
-      MINIO_BUCKET_AUDIO: factory-audio
-      MINIO_BUCKET_VIDEO: factory-video
-      MINIO_BUCKET_ASSETS: factory-assets
-      MINIO_BUCKET_THUMBNAILS: factory-thumbnails
-      POSTGRES_DSN: postgresql://${POSTGRES_USER:-factory}:${POSTGRES_PASSWORD:-factory_secure_pass_2025}@postgres:5432/factory
-      WORKER_PORT: 8080
-      WHISPER_URL: http://whisper:8000
-      # Número de workers paralelos de render
-      MAX_RENDER_WORKERS: ${MAX_RENDER_WORKERS:-2}
-    volumes:
-      - /tmp/render_workspace:/tmp/workspace
-      - render_fonts:/usr/share/fonts/factory
     ports:
       - "8080:8080"
-    depends_on:
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks:
-      - factory_net
-    deploy:
-      resources:
-        limits:
-          memory: 8G
-        reservations:
-          memory: 2G
 
-  # ============================================================
-  # WATCHTOWER — Auto-actualizaciones
-  # Solo para servicios seguros (n8n, whisper)
-  # ============================================================
-  watchtower:
-    image: containrrr/watchtower:latest
-    container_name: cf_watchtower
-    restart: unless-stopped
-    environment:
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_POLL_INTERVAL: 86400  # cada 24h
-      WATCHTOWER_INCLUDE_STOPPED: "false"
-      # Solo actualizar estos contenedores
-      WATCHTOWER_CONTAINER_LIST: "cf_n8n,cf_whisper"
-      TZ: America/Mexico_City
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - factory_net
-
-# ============================================================
-# VOLUMES
-# ============================================================
 volumes:
   postgres_data:
-    driver: local
   redis_data:
-    driver: local
   minio_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${MINIO_DATA_PATH:-/opt/factory/minio}
-  n8n_data:
-    driver: local
-  whisper_cache:
-    driver: local
-  tts_models:
-    driver: local
-  render_fonts:
-    driver: local
-
-# ============================================================
-# NETWORKS
-# ============================================================
-networks:
-  factory_net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
