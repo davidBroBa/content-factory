@@ -1,0 +1,296 @@
+{
+  "name": "02 - Researcher Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [-400, 300],
+      "id": "trigger-subworkflow",
+      "name": "📥 Entrada desde Orchestrator"
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/youtube/v3/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "part", "value": "snippet" },
+            { "name": "q", "value": "true crime murder case 2024 2025" },
+            { "name": "type", "value": "video" },
+            { "name": "maxResults", "value": "10" },
+            { "name": "order", "value": "viewCount" },
+            { "name": "publishedAfter", "value": "={{ new Date(Date.now() - 30*24*60*60*1000).toISOString() }}" },
+            { "name": "key", "value": "={{ $env.YOUTUBE_API_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 15000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-160, 300],
+      "id": "http-youtube-search",
+      "name": "🔍 YouTube Search",
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extraer y enriquecer items de YouTube\nconst items = $input.first().json.items || [];\n\nreturn items\n  .filter(item => item.id?.videoId)\n  .map(item => ({\n    json: {\n      videoId: item.id.videoId,\n      title: item.snippet.title,\n      channel: item.snippet.channelTitle,\n      publishedAt: item.snippet.publishedAt,\n      description: item.snippet.description?.substring(0, 200)\n    }\n  }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [80, 300],
+      "id": "code-parse-youtube",
+      "name": "📋 Parsear resultados"
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/youtube/v3/videos",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "part", "value": "statistics,snippet" },
+            { "name": "id", "value": "={{ $json.videoId }}" },
+            { "name": "key", "value": "={{ $env.YOUTUBE_API_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [320, 300],
+      "id": "http-youtube-stats",
+      "name": "📊 Estadísticas de video",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {
+        "jsCode": "const result = [];\n\nfor (const item of $input.all()) {\n  const video = item.json.items?.[0];\n  if (!video) continue;\n  \n  const views = Number(video.statistics?.viewCount || 0);\n  const likes = Number(video.statistics?.likeCount || 0);\n  const comments = Number(video.statistics?.commentCount || 0);\n  \n  // Solo videos con engagement real\n  if (views < 10000) continue;\n  \n  const score = (views * 0.5) + (likes * 8) + (comments * 15);\n  \n  result.push({\n    json: {\n      videoId: video.id,\n      title: video.snippet.title,\n      channel: video.snippet.channelTitle,\n      publishedAt: video.snippet.publishedAt,\n      views, likes, comments, score\n    }\n  });\n}\n\n// Top 10 por score\nreturn result\n  .sort((a, b) => b.json.score - a.json.score)\n  .slice(0, 10);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 300],
+      "id": "code-score-filter",
+      "name": "🏆 Puntuar y filtrar"
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "videos_data",
+        "include": "allFields"
+      },
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [800, 300],
+      "id": "aggregate-videos",
+      "name": "📦 Agrupar videos"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.OPENROUTER_API_KEY }}" },
+            { "name": "HTTP-Referer", "value": "https://content-factory.local" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"openai/gpt-4o-mini\",\n  \"temperature\": 0.3,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Eres un analista de tendencias criminales para YouTube Shorts. Responde SOLO en JSON válido. Identifica casos criminales reales con nombre buscable en Google/Wikipedia. NO inventes nombres. Prioriza: asesinos seriales, casos sin resolver, desapariciones famosas, crímenes con alto impacto mediático. Formato: {\\\"topics\\\": [{\\\"topic\\\": string, \\\"score\\\": number 1-100, \\\"summary\\\": string máx 150 chars}]}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"={{ 'Analiza estos videos de true crime y extrae 3-5 temas/casos específicos con nombre real:\\\\n\\\\n' + JSON.stringify($json.videos_data.slice(0,10).map(v => ({title: v.title, views: v.views, channel: v.channel})), null, 2) }}\"\n    }\n  ]\n}",
+        "options": { "timeout": 30000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1040, 300],
+      "id": "http-openrouter-trends",
+      "name": "🤖 Trend Analyzer (OpenRouter)",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parsear respuesta de OpenRouter\nconst response = $input.first().json;\n\nlet topics = [];\ntry {\n  const content = response.choices?.[0]?.message?.content || '{}';\n  const parsed = JSON.parse(content);\n  topics = parsed.topics || [];\n} catch (e) {\n  throw new Error('No se pudo parsear la respuesta del LLM: ' + e.message);\n}\n\nif (topics.length === 0) {\n  throw new Error('El LLM no devolvió tópicos válidos');\n}\n\nreturn topics.map(t => ({ json: t }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1280, 300],
+      "id": "code-parse-topics",
+      "name": "📋 Parsear tópicos"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT topic FROM factory.topics WHERE created_at > NOW() - INTERVAL '7 days'",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1520, 200],
+      "id": "db-existing-topics",
+      "name": "🗄️ Topics recientes",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deduplicar contra topics recientes\nconst newTopics = $('📋 Parsear tópicos').all();\nconst existingRaw = $('🗄️ Topics recientes').all();\n\nconst existingTopics = existingRaw.map(i => i.json.topic?.toLowerCase().trim());\n\nconst deduped = newTopics.filter(item => {\n  const t = item.json.topic?.toLowerCase().trim();\n  if (!t) return false;\n  \n  // Verificar similitud básica (si ya existe un topic similar)\n  const isDuplicate = existingTopics.some(existing => {\n    if (!existing) return false;\n    // Si comparten más de 3 palabras, probablemente es el mismo tema\n    const words1 = t.split(' ');\n    const words2 = existing.split(' ');\n    const shared = words1.filter(w => w.length > 3 && words2.includes(w));\n    return shared.length >= 2;\n  });\n  \n  return !isDuplicate;\n});\n\nif (deduped.length === 0) {\n  // No hay temas nuevos — salir limpiamente\n  return [{ json: { skipped: true, reason: 'Todos los temas ya existen en los últimos 7 días' } }];\n}\n\nconsole.log(`Temas nuevos: ${deduped.length} de ${newTopics.length}`);\nreturn deduped.slice(0, 2); // Máximo 2 videos por ciclo"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 300],
+      "id": "code-dedup",
+      "name": "🔄 Deduplicar"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "check-skip",
+              "leftValue": "={{ $json.skipped }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2000, 300],
+      "id": "if-has-topics",
+      "name": "🔀 ¿Hay temas nuevos?"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": {
+          "__rl": true,
+          "value": "factory",
+          "mode": "list"
+        },
+        "table": {
+          "__rl": true,
+          "value": "topics",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "topic": "={{ $json.topic }}",
+            "niche": "true_crime",
+            "summary": "={{ $json.summary?.substring(0, 500) }}",
+            "trend_score": "={{ $json.score || 50 }}",
+            "source": "youtube_trending",
+            "status": "pending"
+          }
+        },
+        "options": {
+          "queryBatching": "independently",
+          "onConflict": "ignore"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2240, 400],
+      "id": "db-insert-topics",
+      "name": "💾 Guardar topics",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "logs", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "level": "info",
+            "service": "researcher",
+            "event": "topics_found",
+            "message": "={{ 'Researcher completado: ' + $json.topic }}",
+            "topic_id": "={{ $json.id }}"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2480, 400],
+      "id": "db-log-success",
+      "name": "📝 Log éxito",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "📥 Entrada desde Orchestrator": {
+      "main": [[{ "node": "🔍 YouTube Search", "type": "main", "index": 0 }]]
+    },
+    "🔍 YouTube Search": {
+      "main": [[{ "node": "📋 Parsear resultados", "type": "main", "index": 0 }]]
+    },
+    "📋 Parsear resultados": {
+      "main": [[{ "node": "📊 Estadísticas de video", "type": "main", "index": 0 }]]
+    },
+    "📊 Estadísticas de video": {
+      "main": [[{ "node": "🏆 Puntuar y filtrar", "type": "main", "index": 0 }]]
+    },
+    "🏆 Puntuar y filtrar": {
+      "main": [[{ "node": "📦 Agrupar videos", "type": "main", "index": 0 }]]
+    },
+    "📦 Agrupar videos": {
+      "main": [[{ "node": "🤖 Trend Analyzer (OpenRouter)", "type": "main", "index": 0 }]]
+    },
+    "🤖 Trend Analyzer (OpenRouter)": {
+      "main": [[{ "node": "📋 Parsear tópicos", "type": "main", "index": 0 }]]
+    },
+    "📋 Parsear tópicos": {
+      "main": [
+        [{ "node": "🗄️ Topics recientes", "type": "main", "index": 0 }],
+        [{ "node": "🔄 Deduplicar", "type": "main", "index": 0 }]
+      ]
+    },
+    "🗄️ Topics recientes": {
+      "main": [[{ "node": "🔄 Deduplicar", "type": "main", "index": 0 }]]
+    },
+    "🔄 Deduplicar": {
+      "main": [[{ "node": "🔀 ¿Hay temas nuevos?", "type": "main", "index": 0 }]]
+    },
+    "🔀 ¿Hay temas nuevos?": {
+      "main": [
+        [],
+        [{ "node": "💾 Guardar topics", "type": "main", "index": 0 }]
+      ]
+    },
+    "💾 Guardar topics": {
+      "main": [[{ "node": "📝 Log éxito", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "tags": ["factory", "researcher"]
+}

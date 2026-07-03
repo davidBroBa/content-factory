@@ -1,0 +1,47 @@
+[
+  {
+    "scene_number": 1,
+    "start_s": 0.0,
+    "end_s": 7.0,
+    "theme": "detective investigation",
+    "search_query": "detective crime investigation",
+    "local_path": "/tmp/workspace/scene_001.mp4",
+    "asset_url": "https://www.pexels.com/video/854982/download/"
+  },
+  {
+    "scene_number": 2,
+    "start_s": 7.0,
+    "end_s": 14.5,
+    "theme": "court justice",
+    "search_query": "court of justice",
+    "local_path": "/tmp/workspace/scene_002.mp4",
+    "asset_url": "https://www.pexels.com/video/3255697/download/"
+  },
+  {
+    "scene_number": 3,
+    "start_s": 14.5,
+    "end_s": 21.0,
+    "theme": "crime scene forensics",
+    "search_query": "forensic crime scene",
+    "local_path": "/tmp/workspace/scene_003.mp4",
+    "asset_url": "https://www.pexels.com/video/2516159/download/"
+  },
+  {
+    "scene_number": 4,
+    "start_s": 21.0,
+    "end_s": 28.0,
+    "theme": "police investigation",
+    "search_query": "police investigation",
+    "local_path": null,
+    "asset_url": null
+  },
+  {
+    "scene_number": 5,
+    "start_s": 28.0,
+    "end_s": 35.0,
+    "theme": "evidence proof",
+    "search_query": "evidence documents close up",
+    "local_path": "/tmp/workspace/scene_005.mp4",
+    "asset_url": "https://www.pexels.com/video/3255697/download/"
+  }
+]

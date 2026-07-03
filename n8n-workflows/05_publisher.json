@@ -1,0 +1,208 @@
+{
+  "name": "05 - Publisher",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [-600, 300],
+      "id": "trigger-publisher",
+      "name": "📥 Entrada desde Producer"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT s.title, s.description, s.hashtags, seo.thumbnail_text, t.topic FROM factory.videos v JOIN factory.scripts s ON s.id = v.script_id JOIN factory.topics t ON t.id = v.topic_id LEFT JOIN factory.seo_outputs seo ON seo.script_id = s.id AND seo.platform = 'youtube' WHERE v.id = $1::uuid",
+        "additionalFields": {
+          "queryParams": "={{ $json.video_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-360, 300],
+      "id": "db-get-video-meta",
+      "name": "📋 Obtener metadata del video",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Preparar datos de publicación\nconst meta = $('📋 Obtener metadata del video').item.json;\nconst input = $('📥 Entrada desde Producer').item.json;\n\nconst hashtags = Array.isArray(meta.hashtags) ? meta.hashtags : JSON.parse(meta.hashtags || '[]');\nconst hashtagStr = hashtags.map(h => '#' + h).join(' ');\n\nreturn [{\n  json: {\n    video_id: input.video_id,\n    video_url: input.video_url,\n    topic_id: input.topic_id,\n    script_id: input.script_id,\n    topic: input.topic,\n    // YouTube\n    yt_title: meta.title || input.topic,\n    yt_description: (meta.description || '') + '\\n\\n' + hashtagStr,\n    yt_hashtags: hashtags,\n    // TikTok / Instagram / Facebook\n    short_caption: (meta.title || input.topic) + '\\n\\n' + hashtagStr.substring(0, 300),\n    thumbnail_text: meta.thumbnail_text || ''\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-120, 300],
+      "id": "code-prepare-publish",
+      "name": "⚙️ Preparar publicación"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.blotato.com/v1/posts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.BLOTATO_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"platforms\": [\"youtube\", \"tiktok\", \"instagram\", \"facebook\"],\n  \"media_url\": {{ JSON.stringify($json.video_url) }},\n  \"posts\": {\n    \"youtube\": {\n      \"title\": {{ JSON.stringify($json.yt_title) }},\n      \"description\": {{ JSON.stringify($json.yt_description) }},\n      \"category\": \"25\",\n      \"privacy\": \"public\",\n      \"made_for_kids\": false,\n      \"shorts\": true\n    },\n    \"tiktok\": {\n      \"caption\": {{ JSON.stringify($json.short_caption) }},\n      \"privacy\": \"PUBLIC_TO_EVERYONE\"\n    },\n    \"instagram\": {\n      \"caption\": {{ JSON.stringify($json.short_caption) }},\n      \"media_type\": \"REELS\"\n    },\n    \"facebook\": {\n      \"message\": {{ JSON.stringify($json.short_caption) }},\n      \"video_state\": \"PUBLISHED\"\n    }\n  }\n}",
+        "options": { "timeout": 60000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [120, 200],
+      "id": "http-blotato",
+      "name": "📤 Publicar via Blotato",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000,
+      "onError": "continueErrorOutput",
+      "notes": "Blotato publica en YouTube, TikTok, Instagram y Facebook simultáneamente.\nAlternativa: usar YouTube Data API v3 directamente."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "blotato-ok",
+              "leftValue": "={{ $json.success || $json.id || $json.post_id }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [360, 200],
+      "id": "if-publish-ok",
+      "name": "🔀 ¿Publicación OK?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const blotato = $input.first().json;\nconst publish = $('⚙️ Preparar publicación').item.json;\n\n// Extraer IDs por plataforma si Blotato los devuelve\nconst platforms = ['youtube', 'tiktok', 'instagram', 'facebook'];\nconst results = [];\n\nfor (const platform of platforms) {\n  const platformData = blotato.results?.[platform] || blotato.platforms?.[platform] || {};\n  results.push({\n    json: {\n      video_id: publish.video_id,\n      platform: platform,\n      platform_post_id: platformData.id || platformData.post_id || blotato.id || null,\n      platform_url: platformData.url || platformData.share_url || null,\n      title_used: platform === 'youtube' ? publish.yt_title : publish.short_caption.split('\\n')[0],\n      description_used: platform === 'youtube' ? publish.yt_description : publish.short_caption,\n      hashtags_used: publish.yt_hashtags\n    }\n  });\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 100],
+      "id": "code-parse-publish-result",
+      "name": "📋 Parsear resultado"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "publications", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "video_id": "={{ $json.video_id }}",
+            "platform": "={{ $json.platform }}",
+            "platform_post_id": "={{ $json.platform_post_id }}",
+            "platform_url": "={{ $json.platform_url }}",
+            "title_used": "={{ $json.title_used }}",
+            "description_used": "={{ $json.description_used }}",
+            "hashtags_used": "={{ JSON.stringify($json.hashtags_used) }}",
+            "published_at": "={{ new Date().toISOString() }}",
+            "status": "completed"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [840, 100],
+      "id": "db-save-publications",
+      "name": "💾 Guardar publicaciones",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE factory.topics SET status = 'completed', produced = TRUE, updated_at = NOW() WHERE id = $1::uuid",
+        "additionalFields": {
+          "queryParams": "={{ $('⚙️ Preparar publicación').item.json.topic_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 100],
+      "id": "db-mark-topic-done",
+      "name": "✅ Marcar topic completado",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "publications", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "video_id": "={{ $('⚙️ Preparar publicación').item.json.video_id }}",
+            "platform": "youtube",
+            "status": "failed",
+            "error_message": "={{ JSON.stringify($json.error || $json.message || 'Error desconocido').substring(0,500) }}"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [600, 380],
+      "id": "db-log-publish-fail",
+      "name": "❌ Log fallo publicación",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "📥 Entrada desde Producer": {
+      "main": [[{ "node": "📋 Obtener metadata del video", "type": "main", "index": 0 }]]
+    },
+    "📋 Obtener metadata del video": {
+      "main": [[{ "node": "⚙️ Preparar publicación", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Preparar publicación": {
+      "main": [[{ "node": "📤 Publicar via Blotato", "type": "main", "index": 0 }]]
+    },
+    "📤 Publicar via Blotato": {
+      "main": [[{ "node": "🔀 ¿Publicación OK?", "type": "main", "index": 0 }]]
+    },
+    "🔀 ¿Publicación OK?": {
+      "main": [
+        [{ "node": "📋 Parsear resultado", "type": "main", "index": 0 }],
+        [{ "node": "❌ Log fallo publicación", "type": "main", "index": 0 }]
+      ]
+    },
+    "📋 Parsear resultado": {
+      "main": [[{ "node": "💾 Guardar publicaciones", "type": "main", "index": 0 }]]
+    },
+    "💾 Guardar publicaciones": {
+      "main": [[{ "node": "✅ Marcar topic completado", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "tags": ["factory", "publisher"]
+}

@@ -1,0 +1,270 @@
+{
+  "name": "03 - Scriptwriter Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [-600, 300],
+      "id": "trigger-scriptwriter",
+      "name": "📥 Entrada desde Orchestrator"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, topic, summary, trend_score FROM factory.topics WHERE status = 'pending' AND produced = FALSE ORDER BY trend_score DESC, created_at ASC LIMIT 2",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-360, 300],
+      "id": "db-get-pending-topics",
+      "name": "📋 Obtener tópicos pendientes",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "has-topics",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-120, 300],
+      "id": "if-has-topics",
+      "name": "🔀 ¿Hay tópicos?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.OPENROUTER_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "HTTP-Referer", "value": "https://content-factory.local" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"openai/gpt-4o-mini\",\n  \"temperature\": 0.7,\n  \"max_tokens\": 600,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Eres un guionista viral experto en true crime para YouTube Shorts en español neutro. Tu objetivo: máximo engagement en los primeros 3 segundos. Reglas:\\n1. Hook impactante en las PRIMERAS PALABRAS (dato sorprendente, pregunta retórica, afirmación controversial)\\n2. Lenguaje conversacional, como contarle a un amigo\\n3. 120-150 palabras exactas (para 35-45 segundos de narración)\\n4. Sin markdown, sin títulos, sin saltos de línea — texto continuo listo para TTS\\n5. Terminar con CTA urgente: 'Sígueme para más casos como este'\\n6. Solo hechos reales, no inventar detalles\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"={{ 'Escribe el guion de voz en off para un YouTube Short sobre: ' + $json.topic + '\\\\n\\\\nContexto: ' + ($json.summary || 'Caso de true crime viral') + '\\\\n\\\\nEl guion debe empezar directo con el hook, sin introducción.' }}\"\n    }\n  ]\n}",
+        "options": { "timeout": 30000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [120, 200],
+      "id": "http-script-gen",
+      "name": "✍️ Generar guion (OpenRouter)",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.OPENROUTER_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"openai/gpt-4o-mini\",\n  \"temperature\": 0.4,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"max_tokens\": 500,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Eres un experto en SEO para redes sociales. Genera metadata optimizada para YouTube Shorts, TikTok e Instagram. Responde SOLO JSON válido con este formato exacto: {\\\"youtube_title\\\": string máx 60 chars, \\\"youtube_description\\\": string máx 200 chars, \\\"hashtags\\\": array de 10-15 strings sin #, \\\"tiktok_title\\\": string máx 50 chars, \\\"keywords\\\": array de 5 strings, \\\"thumbnail_text\\\": string máx 5 palabras impactantes}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"={{ 'Genera el SEO para un Short de true crime sobre: ' + $('📋 Obtener tópicos pendientes').item.json.topic + '\\\\n\\\\nGuion: ' + $json.choices[0].message.content.substring(0, 300) }}\"\n    }\n  ]\n}",
+        "options": { "timeout": 20000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [120, 420],
+      "id": "http-seo-gen",
+      "name": "🏷️ Generar SEO (OpenRouter)",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parsear respuestas del guion y SEO\nconst scriptResponse = $('✍️ Generar guion (OpenRouter)').item.json;\nconst seoResponse = $('🏷️ Generar SEO (OpenRouter)').item.json;\nconst topic = $('📋 Obtener tópicos pendientes').item.json;\n\n// Extraer guion\nconst fullScript = scriptResponse.choices?.[0]?.message?.content?.trim();\nif (!fullScript) {\n  throw new Error('El LLM no generó guion válido para: ' + topic.topic);\n}\n\nconst wordCount = fullScript.split(/\\s+/).length;\nconst estimatedDuration = wordCount / 3.2; // ~3.2 palabras por segundo en narración\n\n// Extraer SEO\nlet seoData = {};\ntry {\n  const seoContent = seoResponse.choices?.[0]?.message?.content || '{}';\n  seoData = JSON.parse(seoContent);\n} catch (e) {\n  console.warn('Error parseando SEO, usando defaults:', e.message);\n  seoData = {\n    youtube_title: topic.topic.substring(0, 60),\n    youtube_description: topic.summary || '',\n    hashtags: ['truecrime', 'crimenesreales', 'shorts'],\n    tiktok_title: topic.topic.substring(0, 50),\n    keywords: [topic.topic],\n    thumbnail_text: 'INCREÍBLE CASO REAL'\n  };\n}\n\n// Calcular costo estimado (gpt-4o-mini: ~$0.00015/1K input, $0.0006/1K output)\nconst promptTokens = scriptResponse.usage?.prompt_tokens || 0;\nconst completionTokens = scriptResponse.usage?.completion_tokens || 0;\nconst costUsd = (promptTokens * 0.00015 / 1000) + (completionTokens * 0.0006 / 1000);\n\nreturn [{\n  json: {\n    topic_id: topic.id,\n    topic: topic.topic,\n    full_script: fullScript,\n    word_count: wordCount,\n    estimated_duration_s: Math.round(estimatedDuration * 10) / 10,\n    title: seoData.youtube_title || topic.topic,\n    description: seoData.youtube_description || '',\n    hashtags: seoData.hashtags || [],\n    keywords: seoData.keywords || [],\n    tiktok_title: seoData.tiktok_title || '',\n    thumbnail_text: seoData.thumbnail_text || '',\n    model_used: 'gpt-4o-mini',\n    prompt_tokens: promptTokens,\n    completion_tokens: completionTokens,\n    cost_usd: costUsd\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [360, 300],
+      "id": "code-merge-outputs",
+      "name": "🔧 Consolidar outputs"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "scripts", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "topic_id": "={{ $json.topic_id }}",
+            "full_script": "={{ $json.full_script }}",
+            "word_count": "={{ $json.word_count }}",
+            "estimated_duration_s": "={{ $json.estimated_duration_s }}",
+            "title": "={{ $json.title }}",
+            "description": "={{ $json.description }}",
+            "hashtags": "={{ JSON.stringify($json.hashtags) }}",
+            "keywords": "={{ JSON.stringify($json.keywords) }}",
+            "model_used": "gpt-4o-mini",
+            "prompt_tokens": "={{ $json.prompt_tokens }}",
+            "completion_tokens": "={{ $json.completion_tokens }}",
+            "cost_usd": "={{ $json.cost_usd }}",
+            "status": "completed"
+          }
+        },
+        "options": { "returnFields": "*" }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [600, 300],
+      "id": "db-insert-script",
+      "name": "💾 Guardar guion",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "seo_outputs", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "script_id": "={{ $json.id }}",
+            "platform": "youtube",
+            "title": "={{ $('🔧 Consolidar outputs').item.json.title }}",
+            "description": "={{ $('🔧 Consolidar outputs').item.json.description }}",
+            "hashtags": "={{ JSON.stringify($('🔧 Consolidar outputs').item.json.hashtags) }}",
+            "tags": "={{ JSON.stringify($('🔧 Consolidar outputs').item.json.keywords) }}",
+            "thumbnail_text": "={{ $('🔧 Consolidar outputs').item.json.thumbnail_text }}"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [840, 200],
+      "id": "db-insert-seo-yt",
+      "name": "💾 SEO YouTube",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "seo_outputs", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "script_id": "={{ $('💾 Guardar guion').item.json.id }}",
+            "platform": "tiktok",
+            "title": "={{ $('🔧 Consolidar outputs').item.json.tiktok_title }}",
+            "description": "={{ $('🔧 Consolidar outputs').item.json.description }}",
+            "hashtags": "={{ JSON.stringify($('🔧 Consolidar outputs').item.json.hashtags) }}"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [840, 380],
+      "id": "db-insert-seo-tiktok",
+      "name": "💾 SEO TikTok",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO factory.logs (level, service, event, message, topic_id, script_id, metadata) VALUES ('info', 'scriptwriter', 'script_generated', $1, $2::uuid, $3::uuid, $4::jsonb)",
+        "additionalFields": {
+          "queryParams": "={{ [\n  'Guion generado: ' + $('📋 Obtener tópicos pendientes').item.json.topic,\n  $('📋 Obtener tópicos pendientes').item.json.id,\n  $('💾 Guardar guion').item.json.id,\n  JSON.stringify({ word_count: $('🔧 Consolidar outputs').item.json.word_count, cost_usd: $('🔧 Consolidar outputs').item.json.cost_usd })\n] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 300],
+      "id": "db-log-script",
+      "name": "📝 Log guion",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "📥 Entrada desde Orchestrator": {
+      "main": [[{ "node": "📋 Obtener tópicos pendientes", "type": "main", "index": 0 }]]
+    },
+    "📋 Obtener tópicos pendientes": {
+      "main": [[{ "node": "🔀 ¿Hay tópicos?", "type": "main", "index": 0 }]]
+    },
+    "🔀 ¿Hay tópicos?": {
+      "main": [
+        [
+          { "node": "✍️ Generar guion (OpenRouter)", "type": "main", "index": 0 },
+          { "node": "🏷️ Generar SEO (OpenRouter)", "type": "main", "index": 0 }
+        ],
+        []
+      ]
+    },
+    "✍️ Generar guion (OpenRouter)": {
+      "main": [[{ "node": "🔧 Consolidar outputs", "type": "main", "index": 0 }]]
+    },
+    "🏷️ Generar SEO (OpenRouter)": {
+      "main": [[{ "node": "🔧 Consolidar outputs", "type": "main", "index": 0 }]]
+    },
+    "🔧 Consolidar outputs": {
+      "main": [[{ "node": "💾 Guardar guion", "type": "main", "index": 0 }]]
+    },
+    "💾 Guardar guion": {
+      "main": [
+        [{ "node": "💾 SEO YouTube", "type": "main", "index": 0 }],
+        [{ "node": "💾 SEO TikTok", "type": "main", "index": 0 }]
+      ]
+    },
+    "💾 SEO YouTube": {
+      "main": [[{ "node": "📝 Log guion", "type": "main", "index": 0 }]]
+    },
+    "💾 SEO TikTok": {
+      "main": [[{ "node": "📝 Log guion", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "tags": ["factory", "scriptwriter"]
+}

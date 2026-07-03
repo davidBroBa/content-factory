@@ -1,0 +1,93 @@
+{
+  "name": "00 - Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [-400, 300],
+      "id": "trigger-error",
+      "name": "🚨 Error Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extraer información estructurada del error\nconst errorData = $input.first().json;\n\nconst execution = errorData.execution || {};\nconst workflow = errorData.workflow || {};\nconst error = execution.error || {};\n\nreturn [{\n  json: {\n    workflow_name: workflow.name || 'Desconocido',\n    workflow_id: workflow.id || null,\n    execution_id: execution.id || null,\n    error_type: error.name || error.type || 'UnknownError',\n    error_message: error.message || JSON.stringify(errorData).substring(0, 500),\n    error_node: error.node?.name || 'Desconocido',\n    stack_trace: error.stack || null,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-160, 300],
+      "id": "code-parse-error",
+      "name": "🔍 Parsear error"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "errors", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "service": "={{ 'n8n::' + $json.workflow_name }}",
+            "error_type": "={{ $json.error_type }}",
+            "message": "={{ $json.error_message }}",
+            "stack_trace": "={{ $json.stack_trace }}",
+            "input_data": "={{ JSON.stringify({ workflow_id: $json.workflow_id, execution_id: $json.execution_id, node: $json.error_node }) }}"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [80, 300],
+      "id": "db-log-error",
+      "name": "💾 Guardar error en DB",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "logs", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "level": "error",
+            "service": "={{ 'n8n::' + $('🔍 Parsear error').item.json.workflow_name }}",
+            "event": "workflow_error",
+            "message": "={{ $('🔍 Parsear error').item.json.error_message }}",
+            "metadata": "={{ JSON.stringify($('🔍 Parsear error').item.json) }}"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [320, 300],
+      "id": "db-structured-log",
+      "name": "📝 Log estructurado",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "🚨 Error Trigger": {
+      "main": [[{ "node": "🔍 Parsear error", "type": "main", "index": 0 }]]
+    },
+    "🔍 Parsear error": {
+      "main": [[{ "node": "💾 Guardar error en DB", "type": "main", "index": 0 }]]
+    },
+    "💾 Guardar error en DB": {
+      "main": [[{ "node": "📝 Log estructurado", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "tags": ["factory", "error-handler"]
+}

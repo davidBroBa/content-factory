@@ -1,0 +1,250 @@
+{
+  "name": "06 - Analytics Collector",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "hours", "hoursInterval": 24 }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [-600, 300],
+      "id": "trigger-analytics-cron",
+      "name": "⏰ Cron diario analytics"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT p.id as publication_id, p.platform, p.platform_post_id, p.platform_url, p.published_at, v.id as video_id, t.topic FROM factory.publications p JOIN factory.videos v ON v.id = p.video_id JOIN factory.topics t ON t.id = v.topic_id WHERE p.status = 'completed' AND p.platform_post_id IS NOT NULL AND p.published_at > NOW() - INTERVAL '30 days' ORDER BY p.published_at DESC LIMIT 50",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-360, 300],
+      "id": "db-get-publications",
+      "name": "📋 Obtener publicaciones activas",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "is-youtube",
+              "leftValue": "={{ $json.platform }}",
+              "rightValue": "youtube",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-120, 300],
+      "id": "if-platform-youtube",
+      "name": "🔀 ¿Es YouTube?"
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/youtube/v3/videos",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "part", "value": "statistics" },
+            { "name": "id", "value": "={{ $json.platform_post_id }}" },
+            { "name": "key", "value": "={{ $env.YOUTUBE_API_KEY }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [120, 160],
+      "id": "http-yt-stats",
+      "name": "📊 YouTube Stats",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parsear estadísticas de YouTube\nconst statsData = $input.first().json;\nconst publication = $('📋 Obtener publicaciones activas').item.json;\n\nconst video = statsData.items?.[0];\nif (!video) {\n  return [{ json: { skip: true, reason: 'Video no encontrado en YouTube', publication_id: publication.publication_id } }];\n}\n\nconst stats = video.statistics || {};\nconst views = Number(stats.viewCount || 0);\nconst likes = Number(stats.likeCount || 0);\nconst comments = Number(stats.commentCount || 0);\n\nconst engagementRate = views > 0 ? ((likes + comments) / views) * 100 : 0;\n\nconst publishedAt = new Date(publication.published_at);\nconst hoursSincePub = Math.floor((Date.now() - publishedAt.getTime()) / (1000 * 60 * 60));\n\nreturn [{\n  json: {\n    publication_id: publication.publication_id,\n    platform: 'youtube',\n    hours_since_pub: hoursSincePub,\n    views,\n    likes,\n    comments,\n    shares: 0,\n    saves: 0,\n    engagement_rate: Math.round(engagementRate * 10000) / 10000,\n    skip: false\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [360, 160],
+      "id": "code-parse-yt-stats",
+      "name": "🔢 Parsear stats YouTube"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Para TikTok, Instagram, Facebook:\n// Las APIs tienen restricciones — guardar placeholder\n// y actualizar manualmente o con acceso Business API\nconst publication = $input.first().json;\n\nreturn [{\n  json: {\n    publication_id: publication.publication_id,\n    platform: publication.platform,\n    hours_since_pub: Math.floor((Date.now() - new Date(publication.published_at).getTime()) / (1000 * 60 * 60)),\n    views: 0,\n    likes: 0,\n    comments: 0,\n    shares: 0,\n    saves: 0,\n    engagement_rate: 0,\n    skip: false,\n    note: 'Requiere Business API para métricas reales'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [120, 440],
+      "id": "code-other-platforms",
+      "name": "📊 Otras plataformas (placeholder)"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "not-skip",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "notTrue" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [600, 300],
+      "id": "if-not-skip",
+      "name": "🔀 ¿Guardar métrica?"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "metrics", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "publication_id": "={{ $json.publication_id }}",
+            "hours_since_pub": "={{ $json.hours_since_pub }}",
+            "views": "={{ $json.views }}",
+            "likes": "={{ $json.likes }}",
+            "comments": "={{ $json.comments }}",
+            "shares": "={{ $json.shares }}",
+            "saves": "={{ $json.saves }}",
+            "engagement_rate": "={{ $json.engagement_rate }}"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [840, 200],
+      "id": "db-insert-metrics",
+      "name": "💾 Guardar métricas",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT platform, SUM(views) as total_views, SUM(likes) as total_likes, AVG(engagement_rate) as avg_engagement, COUNT(DISTINCT publication_id) as videos FROM factory.metrics m JOIN factory.publications p ON p.id = m.publication_id WHERE m.snapshot_at > NOW() - INTERVAL '24 hours' GROUP BY platform ORDER BY total_views DESC",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 200],
+      "id": "db-daily-summary",
+      "name": "📈 Resumen diario",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "summary",
+        "include": "allFields"
+      },
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [1320, 200],
+      "id": "aggregate-summary",
+      "name": "📦 Agrupar resumen"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "logs", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "level": "info",
+            "service": "analytics",
+            "event": "daily_summary",
+            "message": "Resumen diario de métricas recolectado",
+            "metadata": "={{ JSON.stringify($json.summary) }}"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1560, 200],
+      "id": "db-log-analytics",
+      "name": "📝 Log resumen",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "⏰ Cron diario analytics": {
+      "main": [[{ "node": "📋 Obtener publicaciones activas", "type": "main", "index": 0 }]]
+    },
+    "📋 Obtener publicaciones activas": {
+      "main": [[{ "node": "🔀 ¿Es YouTube?", "type": "main", "index": 0 }]]
+    },
+    "🔀 ¿Es YouTube?": {
+      "main": [
+        [{ "node": "📊 YouTube Stats", "type": "main", "index": 0 }],
+        [{ "node": "📊 Otras plataformas (placeholder)", "type": "main", "index": 0 }]
+      ]
+    },
+    "📊 YouTube Stats": {
+      "main": [[{ "node": "🔢 Parsear stats YouTube", "type": "main", "index": 0 }]]
+    },
+    "🔢 Parsear stats YouTube": {
+      "main": [[{ "node": "🔀 ¿Guardar métrica?", "type": "main", "index": 0 }]]
+    },
+    "📊 Otras plataformas (placeholder)": {
+      "main": [[{ "node": "🔀 ¿Guardar métrica?", "type": "main", "index": 0 }]]
+    },
+    "🔀 ¿Guardar métrica?": {
+      "main": [
+        [{ "node": "💾 Guardar métricas", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "💾 Guardar métricas": {
+      "main": [[{ "node": "📈 Resumen diario", "type": "main", "index": 0 }]]
+    },
+    "📈 Resumen diario": {
+      "main": [[{ "node": "📦 Agrupar resumen", "type": "main", "index": 0 }]]
+    },
+    "📦 Agrupar resumen": {
+      "main": [[{ "node": "📝 Log resumen", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "tags": ["factory", "analytics"]
+}

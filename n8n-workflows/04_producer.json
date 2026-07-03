@@ -1,0 +1,457 @@
+{
+  "name": "04 - Producer (TTS + Assets + Render)",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [-600, 300],
+      "id": "trigger-producer",
+      "name": "📥 Entrada"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT t.id as topic_id, t.topic, t.summary, s.id as script_id, s.full_script, s.title, s.description, s.hashtags FROM factory.topics t JOIN factory.scripts s ON s.topic_id = t.id WHERE t.status = 'pending' AND s.status = 'completed' AND t.produced = FALSE ORDER BY t.trend_score DESC, t.created_at ASC LIMIT 1",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-360, 300],
+      "id": "db-get-pending-script",
+      "name": "📋 Obtener guion pendiente",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "has-script",
+              "leftValue": "={{ $json.script_id }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-120, 300],
+      "id": "if-has-script",
+      "name": "🔀 ¿Hay guion?"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE factory.topics SET status = 'processing', updated_at = NOW() WHERE id = $1::uuid RETURNING id",
+        "additionalFields": {
+          "queryParams": "={{ $json.topic_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [120, 200],
+      "id": "db-mark-processing",
+      "name": "🔄 Marcar como procesando",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "audios", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "script_id": "={{ $('📋 Obtener guion pendiente').item.json.script_id }}",
+            "provider": "kokoro",
+            "voice_id": "af_heart",
+            "status": "pending"
+          }
+        },
+        "options": { "returnFields": "*" }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [360, 200],
+      "id": "db-create-audio-record",
+      "name": "💾 Crear registro audio",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TTS_WORKER_URL }}/synthesize",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($('📋 Obtener guion pendiente').item.json.full_script) }},\n  \"voice\": \"af_heart\",\n  \"script_id\": {{ JSON.stringify($('📋 Obtener guion pendiente').item.json.script_id) }},\n  \"audio_db_id\": {{ JSON.stringify($json.id) }},\n  \"lang\": \"e\"\n}",
+        "options": { "timeout": 120000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [600, 200],
+      "id": "http-tts",
+      "name": "🎙️ TTS Worker (Kokoro)",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "tts-success",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [840, 200],
+      "id": "if-tts-ok",
+      "name": "🔀 ¿TTS OK?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHISPER_URL }}/v1/audio/transcriptions",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "parameterType": "formData", "name": "url", "value": "={{ $json.storage_url }}" },
+            { "parameterType": "formData", "name": "response_format", "value": "verbose_json" },
+            { "parameterType": "formData", "name": "language", "value": "es" },
+            { "parameterType": "formData", "name": "timestamp_granularities[]", "value": "word" }
+          ]
+        },
+        "options": { "timeout": 60000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1080, 100],
+      "id": "http-whisper",
+      "name": "🔤 Whisper (subtítulos)",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput",
+      "notes": "Usa Whisper LOCAL — sin costo. Conecta a http://whisper:8000"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parsear segmentos de Whisper para generar subtítulos\nconst whisperData = $input.first().json;\nconst segments = whisperData.segments || [];\nconst words = whisperData.words || [];\n\n// Si hay palabras individuales, usarlas para subtítulos más precisos\nlet subtitleSegments = [];\n\nif (words.length > 0) {\n  // Agrupar palabras en segmentos de 4-5 palabras\n  let currentGroup = [];\n  let groupStart = 0;\n  \n  for (const word of words) {\n    if (currentGroup.length === 0) {\n      groupStart = word.start;\n    }\n    currentGroup.push(word.word);\n    \n    if (currentGroup.length >= 4) {\n      subtitleSegments.push({\n        start: groupStart,\n        end: word.end,\n        text: currentGroup.join(' ').trim()\n      });\n      currentGroup = [];\n    }\n  }\n  \n  // Último grupo\n  if (currentGroup.length > 0) {\n    const lastWord = words[words.length - 1];\n    subtitleSegments.push({\n      start: groupStart,\n      end: lastWord.end,\n      text: currentGroup.join(' ').trim()\n    });\n  }\n} else if (segments.length > 0) {\n  subtitleSegments = segments.map(s => ({\n    start: s.start,\n    end: s.end,\n    text: s.text.trim()\n  }));\n}\n\nreturn [{\n  json: {\n    subtitles: subtitleSegments,\n    total_segments: subtitleSegments.length,\n    duration: whisperData.duration || 0,\n    transcript: whisperData.text || ''\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 100],
+      "id": "code-parse-subtitles",
+      "name": "📝 Parsear subtítulos"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.OPENROUTER_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"openai/gpt-4o-mini\",\n  \"temperature\": 0.2,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Eres un editor de video experto. Crea un timeline de escenas para B-roll basado en la transcripción. Responde SOLO JSON válido con formato: {\\\"scenes\\\": [{\\\"scene_number\\\": int, \\\"start_s\\\": float, \\\"end_s\\\": float, \\\"theme\\\": string, \\\"search_query\\\": string en INGLÉS para Pexels, máx 4 palabras}]}. Las escenas deben cubrir TODO el audio sin huecos. Cada escena 4-8 segundos.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"={{ 'Transcripción completa (duración ' + $('🔤 Whisper (subtítulos)').item.json.duration + 's):\\\\n' + $('🔤 Whisper (subtítulos)').item.json.text + '\\\\n\\\\nCrea el timeline de B-roll para un Short vertical sobre: ' + $('📋 Obtener guion pendiente').item.json.topic }}\"\n    }\n  ]\n}",
+        "options": { "timeout": 30000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1080, 300],
+      "id": "http-scene-generator",
+      "name": "🎬 Scene Generator (OpenRouter)",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parsear escenas del LLM\nconst response = $input.first().json;\nlet scenes = [];\n\ntry {\n  const content = response.choices?.[0]?.message?.content || '{}';\n  const parsed = JSON.parse(content);\n  scenes = parsed.scenes || [];\n} catch (e) {\n  throw new Error('Error parseando escenas: ' + e.message);\n}\n\nif (scenes.length === 0) {\n  // Fallback: crear escenas uniformes basadas en duración del audio\n  const audioDuration = $('🔤 Whisper (subtítulos)').item.json.duration || 40;\n  const nScenes = Math.ceil(audioDuration / 7); // 7 segundos por escena\n  \n  for (let i = 0; i < nScenes; i++) {\n    scenes.push({\n      scene_number: i + 1,\n      start_s: i * (audioDuration / nScenes),\n      end_s: (i + 1) * (audioDuration / nScenes),\n      theme: 'true crime scene',\n      search_query: ['crime scene investigation', 'detective work', 'court justice', 'police investigation', 'forensic evidence'][i % 5]\n    });\n  }\n}\n\nreturn scenes.map(s => ({ json: s }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 300],
+      "id": "code-parse-scenes",
+      "name": "📋 Parsear escenas"
+    },
+    {
+      "parameters": {
+        "url": "https://api.pexels.com/videos/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "query", "value": "={{ $json.search_query }}" },
+            { "name": "orientation", "value": "portrait" },
+            { "name": "per_page", "value": "3" },
+            { "name": "size", "value": "medium" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ $env.PEXELS_API_KEY }}" }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 500
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1560, 300],
+      "id": "http-pexels",
+      "name": "🎥 Pexels B-Roll",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Seleccionar el mejor video de Pexels para esta escena\nconst scene = $input.first().json;\nconst pexelsVideos = scene.videos || [];\n\nlet bestVideoUrl = null;\nlet assetSourceId = null;\n\nif (pexelsVideos.length > 0) {\n  const video = pexelsVideos[0];\n  const videoFiles = video.video_files || [];\n  \n  // Priorizar: portrait HD > portrait SD > cualquier cosa\n  let bestFile = videoFiles.find(f => f.width <= f.height && f.quality === 'hd')\n    || videoFiles.find(f => f.width <= f.height)\n    || videoFiles[0];\n  \n  if (bestFile?.link) {\n    bestVideoUrl = bestFile.link;\n    assetSourceId = String(video.id);\n  }\n}\n\n// Fallback: si Pexels no tiene video, usar color sólido (el render worker lo maneja)\nreturn [{\n  json: {\n    scene_number: scene.scene_number || 1,\n    start_s: scene.start_s || 0,\n    end_s: scene.end_s || 7,\n    theme: scene.theme || '',\n    search_query: scene.search_query || '',\n    asset_url: bestVideoUrl,\n    asset_source_id: assetSourceId,\n    has_broll: !!bestVideoUrl\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 300],
+      "id": "code-select-broll",
+      "name": "🎞️ Seleccionar B-Roll"
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "scenes",
+        "include": "allFields"
+      },
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [2040, 300],
+      "id": "aggregate-scenes",
+      "name": "📦 Agrupar escenas"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "__rl": true, "value": "factory", "mode": "list" },
+        "table": { "__rl": true, "value": "videos", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "topic_id": "={{ $('📋 Obtener guion pendiente').item.json.topic_id }}",
+            "script_id": "={{ $('📋 Obtener guion pendiente').item.json.script_id }}",
+            "audio_id": "={{ $('💾 Crear registro audio').item.json.id }}",
+            "status": "processing",
+            "render_started_at": "={{ new Date().toISOString() }}"
+          }
+        },
+        "options": { "returnFields": "*" }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2280, 300],
+      "id": "db-create-video-record",
+      "name": "💾 Crear registro video",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WORKER_API_URL }}/render",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"video_id\": {{ JSON.stringify($json.id) }},\n  \"script_id\": {{ JSON.stringify($('📋 Obtener guion pendiente').item.json.script_id) }},\n  \"topic_id\": {{ JSON.stringify($('📋 Obtener guion pendiente').item.json.topic_id) }},\n  \"audio_url\": {{ JSON.stringify($('🎙️ TTS Worker (Kokoro)').item.json.storage_url) }},\n  \"scenes\": {{ JSON.stringify($('📦 Agrupar escenas').item.json.scenes) }},\n  \"subtitles\": {{ JSON.stringify($('📝 Parsear subtítulos').item.json.subtitles || []) }},\n  \"ken_burns\": true,\n  \"add_subtitles\": true\n}",
+        "options": { "timeout": 300000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2520, 300],
+      "id": "http-render",
+      "name": "🎬 Render Worker (FFmpeg)",
+      "retryOnFail": false,
+      "onError": "continueErrorOutput",
+      "notes": "Timeout 5 minutos — render puede tardar según hardware"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "render-success",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2760, 300],
+      "id": "if-render-ok",
+      "name": "🔀 ¿Render OK?"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "={{ $env.WORKFLOW_ID_PUBLISHER }}",
+          "mode": "id"
+        },
+        "waitForSubWorkflow": true,
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "video_id": "={{ $json.video_id }}",
+            "video_url": "={{ $json.video_url }}",
+            "topic_id": "={{ $('📋 Obtener guion pendiente').item.json.topic_id }}",
+            "script_id": "={{ $('📋 Obtener guion pendiente').item.json.script_id }}",
+            "topic": "={{ $('📋 Obtener guion pendiente').item.json.topic }}"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [3000, 200],
+      "id": "run-publisher",
+      "name": "📤 Publisher"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE factory.topics SET status = 'failed', updated_at = NOW() WHERE id = $1::uuid",
+        "additionalFields": {
+          "queryParams": "={{ $('📋 Obtener guion pendiente').item.json.topic_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [3000, 420],
+      "id": "db-mark-failed",
+      "name": "❌ Marcar como fallido",
+      "credentials": {
+        "postgres": {
+          "id": "factory-postgres",
+          "name": "Factory PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "📥 Entrada": {
+      "main": [[{ "node": "📋 Obtener guion pendiente", "type": "main", "index": 0 }]]
+    },
+    "📋 Obtener guion pendiente": {
+      "main": [[{ "node": "🔀 ¿Hay guion?", "type": "main", "index": 0 }]]
+    },
+    "🔀 ¿Hay guion?": {
+      "main": [
+        [{ "node": "🔄 Marcar como procesando", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "🔄 Marcar como procesando": {
+      "main": [[{ "node": "💾 Crear registro audio", "type": "main", "index": 0 }]]
+    },
+    "💾 Crear registro audio": {
+      "main": [[{ "node": "🎙️ TTS Worker (Kokoro)", "type": "main", "index": 0 }]]
+    },
+    "🎙️ TTS Worker (Kokoro)": {
+      "main": [[{ "node": "🔀 ¿TTS OK?", "type": "main", "index": 0 }]]
+    },
+    "🔀 ¿TTS OK?": {
+      "main": [
+        [
+          { "node": "🔤 Whisper (subtítulos)", "type": "main", "index": 0 },
+          { "node": "🎬 Scene Generator (OpenRouter)", "type": "main", "index": 0 }
+        ],
+        [{ "node": "❌ Marcar como fallido", "type": "main", "index": 0 }]
+      ]
+    },
+    "🔤 Whisper (subtítulos)": {
+      "main": [[{ "node": "📝 Parsear subtítulos", "type": "main", "index": 0 }]]
+    },
+    "🎬 Scene Generator (OpenRouter)": {
+      "main": [[{ "node": "📋 Parsear escenas", "type": "main", "index": 0 }]]
+    },
+    "📋 Parsear escenas": {
+      "main": [[{ "node": "🎥 Pexels B-Roll", "type": "main", "index": 0 }]]
+    },
+    "🎥 Pexels B-Roll": {
+      "main": [[{ "node": "🎞️ Seleccionar B-Roll", "type": "main", "index": 0 }]]
+    },
+    "🎞️ Seleccionar B-Roll": {
+      "main": [[{ "node": "📦 Agrupar escenas", "type": "main", "index": 0 }]]
+    },
+    "📦 Agrupar escenas": {
+      "main": [[{ "node": "💾 Crear registro video", "type": "main", "index": 0 }]]
+    },
+    "💾 Crear registro video": {
+      "main": [[{ "node": "🎬 Render Worker (FFmpeg)", "type": "main", "index": 0 }]]
+    },
+    "🎬 Render Worker (FFmpeg)": {
+      "main": [[{ "node": "🔀 ¿Render OK?", "type": "main", "index": 0 }]]
+    },
+    "🔀 ¿Render OK?": {
+      "main": [
+        [{ "node": "📤 Publisher", "type": "main", "index": 0 }],
+        [{ "node": "❌ Marcar como fallido", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "tags": ["factory", "producer"]
+}
